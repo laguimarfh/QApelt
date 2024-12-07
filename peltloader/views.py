@@ -4,6 +4,7 @@ import pandas as pd
 import logging
 from datetime import datetime
 from .models import CarData
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -12,12 +13,10 @@ def extract_point(panel_string):
     return panel_string.split(' ')[1] if ' ' in panel_string else panel_string
 
 def calculate_latest(df, colour_code):
-    """Calculate the latest car sequence for the same colour code."""
-    latest_cars = df[df['Colour Code'] == colour_code].shape[0]
-    if latest_cars == 0:
-        return "1 car ago"
-    else:
-        return f"{latest_cars + 1} cars ago"
+    """Calculate the latest car sequence for the same colour code in reverse order."""
+    car_sequence = df[df['Colour Code'] == colour_code].sort_index(ascending=False)
+    latest_values = {idx: f"{i+2} cars ago" for i, idx in enumerate(car_sequence.index)}
+    return latest_values
 
 def get_url_for_colour(colour_code):
     """Get the URL for the given colour code."""
@@ -44,7 +43,7 @@ def upload_file(request):
                 # Handle file upload separately
                 if 'file' not in request.FILES:
                     logger.error('File not uploaded.')
-                    return render(request, 'fileloader/upload.html', {'form': form, 'error': 'File not uploaded.'})
+                    return render(request, 'peltloader/upload.html', {'form': form, 'error': 'File not uploaded.'})
 
                 file = request.FILES['file'].read().decode('utf-8')
                 lines = file.splitlines()
@@ -96,8 +95,13 @@ def upload_file(request):
                     df_existing = pd.DataFrame(columns=columns)
                     logger.debug('Excel file not found. A new one will be created.')
 
-                latest_value = calculate_latest(df_existing, data_row['Colour Code'])
-                data_row['Latest'] = latest_value
+                latest_values = calculate_latest(df_existing, data_row['Colour Code'])
+
+                # Update all previous records to reflect the new sequence
+                for idx, value in latest_values.items():
+                    df_existing.at[idx, 'Latest'] = value
+
+                data_row['Latest'] = '1 car ago'
 
                 # Create DataFrame with the new row, ensuring "Latest", "Primer", "URL", and "Date" are first
                 df_row = pd.DataFrame([data_row], columns=['Latest', 'Primer', 'URL', 'Date'] + [col for col in columns if col not in ['Latest', 'Primer', 'URL', 'Date']])
@@ -128,6 +132,12 @@ def upload_file(request):
 
                 car_data.save()
 
+                # Update previous entries in the database as well
+                for car in CarData.objects.filter(colour_code=data_row['Colour Code']).exclude(id=car_data.id):
+                    previous_count = int(car.latest.split()[0]) + 1
+                    car.latest = f"{previous_count} cars ago"
+                    car.save()
+
                 return redirect('success')
             except Exception as e:
                 logger.error('Error processing file: %s', e)
@@ -138,7 +148,6 @@ def upload_file(request):
     else:
         form = FileUploadForm()
     return render(request, 'peltloader/upload.html', {'form': form})
-
 
 
 """
